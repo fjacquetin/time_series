@@ -1,39 +1,113 @@
+## 0. Initializing ----
+
 rm(list=ls())
+
+# List of required packages
+packages <- c("tidyverse", "insee", "openxlsx", "lubridate", "urca", "zoo", 
+              "ggpubr", "forecast", "fUnitRoots", "gridExtra", "ggrepel", 
+              "seasonal", "broom")
+
+# Install missing packages
+packages_to_install <- packages[!(packages %in% installed.packages()[, "Package"])]
+if (length(packages_to_install) > 0) {
+  install.packages(packages_to_install)
+}
 
 library(tidyverse) # dplyr, magrittr
 library(insee) # API Insee
 library(openxlsx) # saveworkbook
 library(lubridate) # as.Date
 library(urca) # ur.df
-library(estimatr) # lm_robust
-library(ggcorrplot) #ggcorrplot
-library(scales) # scales_x_dateS
-library(rwebstat) #rwebstat
 library(zoo) # yearqtr
 library(ggpubr) # ggarrange
-library(vars) #VARselect
-library(forecast)
+library(forecast) # forecast
 library(fUnitRoots) # adfTest
-library(strucchange)
-library(portes)
 library(gridExtra) # grid.arrange
-library(seasonal)
+library(ggrepel) # geom_text_repel
+library(seasonal) # seas
+library(broom) # tidy
 
-source('utils.R')
-select <- dplyr::select
+## Load useful functions
 
-## Préambule : Pour bien comprendre comment fonctionne l'API de l'Insee
-?get_dataset_list # pas d'argment, importe juste toutes les séries existantes
-?get_idbank_list # importe toutes les noms de séries d'une key list
-?get_insee_dataset # importe toutes les séries (brutes) choisies dans une key list
+select <- dplyr::select ## To avoid mistakes with different packages
 
-## D'abord, on recense toutes les ensembles de données de l'Insee
+ts_to_df <- function(data_ts){
+  
+  data_df <- as.data.frame(data_ts)
+  freq <- frequency(data_ts)
+  date_ts <- time(data_ts)
+  date_df <- as.Date(date_ts)
+  df_date <- data.frame(date=date_df)
+  data <- cbind(df_date,data_df)
+  
+  return(data)
+}
+
+df_to_ts <- function(data, date_col = "date") {
+  
+  period <- data[[date_col]]  
+  data2 <- data %>% select(-all_of(date_col))
+  start_year <- lubridate::year(period[1])
+  start_month <- lubridate::month(period[1])
+  data_ts <- ts(data2, start = c(start_year, start_month), frequency = 12)
+  
+  return(data_ts)
+}
+
+plot_series <- function(df, col, title) {
+  ggplot(df, aes(x = Date, y = !!sym(col))) +
+    geom_line(color = "steelblue", linewidth = 1) +
+    theme_minimal() +
+    labs(title = title) +
+    theme(axis.title = element_blank())
+}
+
+compare_arma_models <- function(series, p_max, q_max, file_name = "results/BIC_Models.xlsx") {
+  models <- list()
+  
+  for (p in 0:p_max) {
+    for (q in 0:q_max) {
+      
+      if(p==0 & q==0){} else {
+        model_name <- paste0("ARMA(", p, ",", q, ")")
+        model <- tryCatch(
+          Arima(series, order = c(p, 0, q)), 
+          error = function(e) NULL
+        )
+        
+        if (!is.null(model)) {
+          models[[model_name]] <- model
+        }
+      }
+    } 
+    }
+    bic_values <- sapply(models, BIC)
+    aic_values <- sapply(models, AIC)
+    
+    bic_table <- data.frame(Model = names(bic_values), BIC = round(bic_values,1), AIC = round(aic_values,1))
+    
+    bic_table <- bic_table[order(bic_table$BIC), ]
+    
+    write.xlsx(paste0("results/",bic_table), file_name, row.names = FALSE)
+    
+    return(bic_table)
+
+  }
+
+## Start : How does work Insee's API
+?get_dataset_list # No argument, just imports all existing series
+?get_idbank_list # Imports all series names from a key list
+?get_insee_dataset # Imports all (raw) series selected from a key list
+
+
+## 1. Dataset ----
+
+## First, list all datasets from Insee
 
 all_datasets <- get_dataset_list()
 
 keys_list = c(
-  'IPPI-2021' # Indices de prix de production et d'importation dans l'industrie
-  # Equipements électriques
+  'IPI-2021' # IPI
 )
 
 df_idbank_list_selected =
@@ -46,15 +120,11 @@ if (!file.exists('data/All_Datasets.xlsx')) {
   saveWorkbook(wb=wb,file="data/All_Datasets.xlsx",overwrite=TRUE)
 }
 
-
-## A partir de cette liste, on garde
-
+## We list all the different IPI in the file "data/series.xlsx"
 
 indicators <- all_datasets %>%
   filter(id %in% keys_list)
 
-
-## Boucle sur chaque élément de keys_list
 wb <- createWorkbook()
 addWorksheet(wb, sheetName = "Main indicators")
 addWorksheet(wb, sheetName = keys_list)
@@ -62,20 +132,27 @@ writeData(wb, sheet = "Main indicators", x = indicators)
 writeData(wb, sheet = keys_list, x = df_idbank_list_selected)
 saveWorkbook(wb, file = "data/series.xlsx", overwrite = TRUE)
 
-serie <- c('010764038') # IPPI Equipements électriques
+## We chose the index "Manufacture of computers and peripheral equipment"
 
-ippi <- get_insee_idbank(serie) %>%
+serie <- c(
+  '010768019' # 26.20 - Manufacture of computers
+ ) 
+
+ipi <- get_insee_idbank(serie) %>%
   filter(FREQ == "M") %>%
   select(date = DATE, values = OBS_VALUE, id_bank = IDBANK) %>%
   mutate(date = as.Date(date, format = "%d/%m/%Y")) %>%
   arrange(date) %>%
   select(-id_bank) %>%
-  rename(ippi=values)
+  rename(ipi=values)
 
-### Visualisation de l'IPPI
+write.csv2(x = ipi,file="data/ipi.csv", row.names = FALSE)
 
+### IPI Vizualisation ----
 
-gg_ippi <- ggplot(ippi) + aes(x=date,y=ippi, color="blue") +
+## We plot the monthly serie
+
+gg_ipi <- ggplot(ipi) + aes(x=date,y=ipi, color="blue") +
   theme_bw() +
   geom_line(linewidth=1, color="blue") +
   theme(axis.title.x = element_blank(),
@@ -83,203 +160,360 @@ gg_ippi <- ggplot(ippi) + aes(x=date,y=ippi, color="blue") +
         plot.title = element_text(hjust=0.5,size=15),
         legend.position = "None"
   ) +
-  labs(title = "Indice des prix à la production - IPPI (équipements électriques)",
-       y="IPPI"
+  labs(title = "IPI (base 100: 2021)",
+       y="IPI (base 100: 2021)"
   )
 
-gg_ippi
+gg_ipi
 
-ippiQ <- mensuel_to_trimestriel(ippi,value_col="ippi")
+## We observe three dynamics
+## (1990-200 : long-run increase
+## 2000s-2016 : long-run decrease
+## 2017-now : stable / slow decrease
 
-ippiQ_ts <- df_to_ts(ippiQ,freq=4)
+## because we want to model the current dynamics, we focus on the last window (2017 to today)
 
-# ippi_ts <- df_to_ts(ippi,freq = 12)
-start(ippiQ_ts)
-end(ippiQ_ts)
+ipi_ts <- window(df_to_ts(ipi), start=c(2017,1))
 
-ippi_ts <- window(ippiQ_ts, start=c(2002,4), end = c(2024,12))
-ln_ippi_ts = log(ippiQ_ts)
+ln_ipi_ts = log(ipi_ts) ## Logarithmic transformation (stabilize variance and study log-growth)
+ln_ipi <- ts_to_df(ln_ipi_ts) ## Function to transform a time serie into a dataframe object
+ln_ipi$date <- as.Date(as.yearqtr(ln_ipi$date), format = "%YQ%q")
 
-serie_x13 <- seas(ln_ippi_ts)
-ln_ippi_cvs_ts <- final(serie_x13)
+## First, we check that there is no seasonality by using a X13 Filter
+
+serie_x13 <- seas(ln_ipi_ts) 
 
 df <- tibble(
   Date = time(final(serie_x13)),
-  CVS = as.numeric(final(serie_x13)), 
-  Tendance = as.numeric(trend(serie_x13)),
-  Saisonnalité = as.numeric(seasonal(serie_x13)),
-  Irrégulier = as.numeric(irregular(serie_x13))
+  `Deaseasonalized serie` = as.numeric(final(serie_x13)), 
+  `Trend` = as.numeric(trend(serie_x13)),
+  `Seasonal Component` = as.numeric(seasonal(serie_x13)),
+  `Stochastic component` = as.numeric(irregular(serie_x13))
 )
 
-# Fonction pour générer un ggplot
-plot_series <- function(df, col, title) {
-  ggplot(df, aes(x = Date, y = !!sym(col))) +
-    geom_line(color = "steelblue", linewidth = 1) +
-    theme_minimal() +
-    labs(title = title) +
-    theme(axis.title = element_blank())
-}
+# Combination of the results of X13 Filter
+p1 <- plot_series(df, "Deaseasonalized serie", "Deaseasonalized serie")
+p2 <- plot_series(df, "Trend", "Trend")
+p3 <- plot_series(df, "Seasonal Component", "Seasonal Component")
+p4 <- plot_series(df, "Stochastic component", "Stochastic component")
 
-# Création des graphiques
-p1 <- plot_series(df, "CVS", "Série CVS (corrigée)")
-p2 <- plot_series(df, "Tendance", "Tendance")
-p3 <- plot_series(df, "Saisonnalité", "Composante Saisonnière")
-p4 <- plot_series(df, "Irrégulier", "Composante Irrégulière")
+grid.arrange(p1, p2, p3, p4, ncol=2)
+gr <- grid.arrange(p1, p2, p3, p4, ncol=2)
+## It's ok even if expected because CVS
 
-# Affichage en grille
-grid.arrange(p1, p2, p3, p4, ncol = 2)
+ggsave(filename="figures/x13.png",gr, width=10,height=6)
 
-dln_ippi_cvs_ts <- diff(ln_ippi_cvs_ts)
-dln_ippi_cvs <- ts_to_df(dln_ippi_cvs_ts) %>%
-  rename(inflation=x)
+## We have to look at the existence of a trend (deterministic or stochastic)
+## The level looks non stationary because we observe a slow decrease since 2017
 
-gg_ippi <- ggplot(dln_ippi_cvs) + aes(x = date, y=inflation) +
-  theme_minimal() +
-  geom_line(color = "steelblue", linewidth = 1) +
-  theme(axis.title = element_blank(),
-        plot.title=element_text(hjust=0.5)) +
-  labs(title = expression(Delta ~ log ~ IPPI[CVS])) +
-  scale_y_continuous(label=scales::percent)
+# We computed the first difference of the serie log(IPI)
 
-gg_ippi
+dln_ipi_ts <- diff(ln_ipi_ts)
+dln_ipi <- ts_to_df(dln_ipi_ts)
 
-adf_test <- ur.df(ln_ippi_cvs_ts, type = "trend", selectlags = "BIC")  # Utilisation du type "drift" (trend) et sélection des lags par AIC
-summary(adf_test)
+gg_dln_ipi <- ggplot(dln_ipi) + aes(x=date,y=ipi, color="blue") +
+  theme_bw() +
+  geom_line(linewidth=1, color="blue") +
+  theme(axis.title.x = element_blank(),
+        axis.text = element_text(size=13),
+        plot.title = element_text(hjust=0.5,size=15),
+        legend.position = "None"
+  ) +
+  labs(    title = expression(Delta * " log(IPI)"),
+       y= expression(Delta * " log(IPI)")
+  )
 
-phi3_hat <- adf_test@teststat[2]  # La statistique de test est stockée dans teststat
-phi3 <- adf_test@cval[2, 3]
+gg_dln_ipi
+## It looks stationary, we will test it formally below
 
-adf_test <- ur.df(dln_ippi_cvs_ts, type = "drift", selectlags = "BIC")  # Utilisation du type "drift" (trend) et sélection des lags par AIC
+gr_ipi <- grid.arrange(gg_ipi,gg_dln_ipi,ncol=2)
+ggsave("figures/ipi.png",gr_ipi,width=15,height=5)
 
-# Le test sélectionne bien 1 lag dans le test augmenté de DF
-summary(adf_test)
+dln_ipi$date <- as.Date(as.yearqtr(dln_ipi$date), format = "%YQ%q")
 
-# On vérifie que le nombre de retards optimaux est 1 avec la fonction VARselect
-VARselect(dln_ippi_cvs_ts,lag.max=12)
+## Stationnarity tests ----
 
-## Test de la moyenne
-mean(dln_ippi_cvs_ts)
+## We run 3 tests : ADF with trend on log(IPI), ADF with drift, ADF with drift on delta_log(IPI)
+## the lags are automatically selected using a BIC criterion
 
-# Test de la moyenne (test t pour une moyenne nulle)
-t_test <- t.test(dln_ippi_cvs_ts, mu = 0)
-t_test$p.value ## 0.0009997
+# Augmented Dickey-Fuller (ADF) Test with trend
+adf_test_trend <- ur.df(ln_ipi_ts, type = "trend", selectlags = "BIC")
+summary(adf_test_trend)
 
-## On rejette le test de la moyenne sur la série DLOG(IPPI)
-## Il y a donc un "drift" (dérive systématique) de la série
-## qu'on introduit en choisissant un test de DF "avec drift"
-## C'est également cohérent avec la théorie économique : l'inflation a une tendance positive
-## de long terme
+phi3_hat <- adf_test_trend@teststat[2]  # Test statistic for trend
+phi3 <- adf_test_trend@cval[2, 3]       # Critical value for trend
+# Check if the null hypothesis (H0) can be rejected
+H0_TEST_TREND <- phi3_hat < phi3
+H0_TEST_TREND # Can't reject H0, so the trend coefficient is assumed to be null
 
-## La série différenciée vérifie le test de Dickey-Fuller avec drift
-tau2_hat <- adf_test@teststat[1]  # La statistique de test est stockée dans teststat
-tau2 <- adf_test@cval[1, 2]
+# Augmented Dickey-Fuller (ADF) Test with drift
+adf_test_drift <- ur.df(ln_ipi_ts, type = "drift", selectlags = "BIC")
+summary(adf_test_drift)
 
-stationarity_log <- ifelse(phi3_hat > phi3, "Oui", "Non")
-stationarity_diff <- ifelse(tau2_hat > tau2, "Oui", "Non")
+# Extract the test statistic and the critical value for the drift test
+tau2_hat <- adf_test_drift@teststat[1]  # Test statistic for drift
+tau2 <- adf_test_drift@cval[1, 2]       # Critical value for drift
+# Check if the null hypothesis (H0) can be rejected
+H0_TEST_DRIFT <- tau2_hat > tau2
+H0_TEST_DRIFT # Can't reject the hypothesis of a unit root, move to differenciating the series
 
-# ADF quick and dirty:
-adfTest(dln_ippi_cvs_ts, type = "c", lags=1)
+# Check the mean of the differenced series
+mean(dln_ipi_ts)
 
-# Philips-Perron (PP)
-summary(ur.pp(dln_ippi_cvs_ts, model="constant", type="Z-tau", use.lag=1)) 
-#reject H0 -17.132 
+# Perform a t-test for the mean (null hypothesis: mean = 0)
+t_test <- t.test(dln_ipi_ts, mu = 0)
+t_test$p.value # 0.8441784, cannot reject the null hypothesis
 
-# Elliott-Rothenberg-Stock (ERS)
-summary(ur.ers(dln_ippi_cvs_ts, model="constant", type="DF-GLS", lag.max=1)) #reject H0 -9.0845 < -1.94
-summary(ur.ers(dln_ippi_cvs_ts, model="constant", type="P-test", lag.max=1)) #reject H0 0.2192 < 3.26
+## Technically, we could assume no drift, but we take this most general case anyway
+adf_test_diff <- ur.df(dln_ipi_ts, type = "drift", selectlags = "BIC")
+summary(adf_test_diff)
 
-# Kwiatkowski-Phillips-Schmidt-Shin (KPSS)
-summary(ur.kpss(dln_ippi_cvs_ts, type="tau", lags="long")) #trend #do not reject H0  0.1294 < 0.146
-summary(ur.kpss(dln_ippi_cvs_ts, type="mu", lags="long")) #constant # do not reject Ho  0.1474 < 0.463
+# Extract the test statistic and the critical value for the differenced series test
+tau2_hat2 <- adf_test_diff@teststat[1]
+tau22 <- adf_test_diff@cval[1, 2]
+H0_TEST_DIFF <- tau2_hat2 > tau22
+H0_TEST_DIFF  # FALSE => Reject H0, the differenced series is stationary
 
-### For M1:
+# Additional tests to confirm stationarity
+
+# Phillips-Perron (PP) Test
+pp_test <- ur.pp(dln_ipi_ts, model = "constant", type = "Z-tau", use.lag = 1)
+summary(pp_test)
+pp_stat <- pp_test@teststat
+pp_crit <- pp_test@cval[1, 2]
+H0_PP <- pp_stat > pp_crit
+H0_PP  # FALSE → Reject H0, the series is stationary
+
+# Elliott-Rothenberg-Stock (ERS) Test (DF-GLS)
+ers_dfgls_test <- ur.ers(dln_ipi_ts, model = "constant", type = "DF-GLS", lag.max = 1)
+summary(ers_dfgls_test)
+ers_dfgls_stat <- ers_dfgls_test@teststat
+ers_dfgls_crit <- ers_dfgls_test@cval[1, 2]
+H0_ERS_DFGLS <- ers_dfgls_stat > ers_dfgls_crit
+H0_ERS_DFGLS  # FALSE → Reject H0, the series is stationary
+
+# Elliott-Rothenberg-Stock (ERS) Test (P-test)
+ers_p_test <- ur.ers(dln_ipi_ts, model = "constant", type = "P-test", lag.max = 1)
+summary(ers_p_test)
+ers_p_stat <- ers_p_test@teststat
+ers_p_crit <- ers_p_test@cval[1, 2]
+H0_ERS_P <- ers_p_stat > ers_p_crit
+H0_ERS_P  # FALSE → Reject H0, the series is stationary
+
+# Kwiatkowski-Phillips-Schmidt-Shin (KPSS) Test (Tau)
+kpss_tau_test <- ur.kpss(dln_ipi_ts, type = "tau", lags = "long")
+summary(kpss_tau_test)
+kpss_tau_stat <- kpss_tau_test@teststat
+kpss_tau_crit <- kpss_tau_test@cval[1, 2]
+H0_KPSS_TAU <- kpss_tau_stat < kpss_tau_crit
+H0_KPSS_TAU  # TRUE → Do not reject H0, the series is stationary
+
+# Kwiatkowski-Phillips-Schmidt-Shin (KPSS) Test (Mu)
+kpss_mu_test <- ur.kpss(dln_ipi_ts, type = "mu", lags = "long")
+summary(kpss_mu_test)
+kpss_mu_stat <- kpss_mu_test@teststat
+kpss_mu_crit <- kpss_mu_test@cval[1, 2]
+H0_KPSS_MU <- kpss_mu_stat < kpss_mu_crit
+H0_KPSS_MU  # TRUE → Do not reject H0, the series is stationary
+
+
+test_results <- data.frame(
+  Test = c("ADF Test (Trend)", "ADF Test (Drift)", "ADF Test (Differenced)",
+           "Phillips-Perron Test", "ERS Test (DF-GLS)", "ERS Test (P-test)",
+           "KPSS Test (Tau)", "KPSS Test (Mu)"),
+  Coefficient_Tested = c("Linear Trend", "Unit Root", "Unit Root", "Unit Root", "Unit Root", "Unit Root", "Unit Root", "Unit Root"),
+  Test_Statistic = c(phi3_hat, tau2_hat, tau2_hat2, pp_stat, ers_dfgls_stat, ers_p_stat, kpss_tau_stat, kpss_mu_stat),
+  Critical_Value = c(phi3, tau2, tau22, pp_crit, ers_dfgls_crit, ers_p_crit, kpss_tau_crit, kpss_mu_crit),
+  H0 = c("Trend Coefficient = 0", "Not Stationary", "Not stationary", "Not Stationary", "Not stationary", "Not Stationary", "Stationary", "Stationary"),
+  Testing_H0 = c(H0_TEST_TREND, H0_TEST_DRIFT, H0_TEST_DIFF, H0_PP, H0_ERS_DFGLS, H0_ERS_P, H0_KPSS_TAU, H0_KPSS_MU)
+  
+)
+
+test_results$Test_Statistic <- round(test_results$Test_Statistic,2)
+test_results$Test_Statistic <- round(test_results$Critical_Value,2)
+test_results$Testing_H0 <- as.logical(test_results$Testing_H0)
+
+write.xlsx(test_results, "results/adf_test_results.xlsx")
+
+## 2. Modeling ----
+## using the Box-Jenkins approach
+
 # Check empirical ACF and PACF to fix maximum (p,q) for the potential ARMA(p,q)
-# Calcul de l'ACF et PACF
-acf_data <- acf(dln_ippi_cvs_ts, plot = FALSE,lag.max = 40)
-pacf_data <- pacf(dln_ippi_cvs_ts, plot = FALSE,lag.max = 40)
 
-# Conversion en data.frame
+acf_data <- acf(dln_ipi_ts, plot = FALSE,lag.max = 30)
+pacf_data <- pacf(dln_ipi_ts, plot = FALSE,lag.max = 30)
+
 acf_df <- data.frame(Lag = acf_data$lag*12, ACF = acf_data$acf)
 pacf_df <- data.frame(Lag = pacf_data$lag*12, PACF = pacf_data$acf)
 
-# Graphique ACF
+# Autocorrelation function (ACF)
 p1 <- ggplot(acf_df, aes(x = Lag, y = ACF)) +
   geom_bar(stat = "identity", fill = "blue", alpha = 0.6) +
-  geom_hline(yintercept = c(-1.96/sqrt(length(dln_ippi_cvs_ts)), 1.96/sqrt(length(dln_ippi_cvs_ts))), 
+  geom_hline(yintercept = c(-1.96/sqrt(length(dln_ipi_ts)), 1.96/sqrt(length(dln_ipi_ts))), 
              linetype = "dashed", color = "red") +
   theme_minimal() +
   labs(title = "Autocorrelation Function (ACF)", x = "Lag", y = "ACF")
 
-# Graphique PACF
+# Partial autocorrelation function (PACF)
 p2 <- ggplot(pacf_df, aes(x = Lag, y = PACF)) +
   geom_bar(stat = "identity", fill = "blue", alpha = 0.6) +
-  geom_hline(yintercept = c(-1.96/sqrt(length(dln_ippi_cvs_ts)), 1.96/sqrt(length(dln_ippi_cvs_ts))), 
+  geom_hline(yintercept = c(-1.96/sqrt(length(dln_ipi_ts)), 1.96/sqrt(length(dln_ipi_ts))), 
              linetype = "dashed", color = "red") +
   theme_minimal() +
   labs(title = "Partial Autocorrelation Function (PACF)", x = "Lag", y = "PACF")
 
-# Affichage des graphiques
+# Visualization of ACF and PACF
 grid.arrange(p1, p2, ncol = 2)
+acf <- grid.arrange(p1, p2, ncol = 2)
 
-## On estime les 1ers modèles pour (p,d,q) = (3,0,4) car ce sont les lags les plus élevés pour lesquels
-## l'ACF et la PACF sont signficativements non nuls
+ggsave("figures/acf.png",acf,width=8,height=5)
 
-ar3 <- Arima(dln_ippi_cvs_ts,order=c(3,0,0))
-ar3
-ar2 <- Arima(dln_ippi_cvs_ts,order=c(2,0,0))
-ar2
-ar1 <- Arima(dln_ippi_cvs_ts,order=c(1,0,0))
-ar1
+## Graphically (pmax,qmax) = (2,1) because these are the highest lags for which the ACF and PACF are
+## statistically signifiant
 
-ma4 <- Arima(dln_ippi_cvs_ts,order=c(0,0,4))
-ma4
+## We create the function below to produce all possible models ARMA(p,q) with p<=p_max, q<=q_max
 
-arma34 <- Arima(dln_ippi_cvs_ts,order=c(3,0,4))
-arma34
-arma24 <- Arima(dln_ippi_cvs_ts,order=c(2,0,4))
-arma24
-arma14 <- Arima(dln_ippi_cvs_ts,order=c(1,0,4))
-arma14
+## Application to our serie with pmax=2, qmax=1
+bic_results <- compare_arma_models(dln_ipi_ts, p_max = 2, q_max = 1)
+bic_results[1,]
 
-ar1$bic
-ma4$bic
-arma14$bic
+## Comparison with the (dirty) automatic method
+auto.arima(dln_ipi_ts) # The dirty way concludes to the same model
 
-## On sélectionne le modèle MA(4) qui minimise le critère bayésien.
-model <- ma4
+## We select the AR2=ARMA(2,0) model that minimizes the BIC
+arma20 <- Arima(dln_ipi_ts,order=c(2,0,0))
+best_model <- arma20
 
-hist(model$residuals,breaks=50) # residuals do not really seem to be normally dis.
-Box.test(model$residuals, lag=40, type="Ljung-Box") #p value > 5%: on rejette l'hypothèse d'autocorrélation
-shapiro.test(model$residuals) # on rejette H0 : les résidus ne suivent pas une distribution gaussienne
-ks.test(model$residuals, rnorm) # De même
+# Produce the regression table
+arma20_tidy <- tidy(arma20)
+arma20_tidy$z_stat <- arma20_tidy$estimate / arma20_tidy$std.error
+arma20_tidy$Significance <- with(arma20_tidy, 
+                                 ifelse(abs(z_stat) >= 3, "***", 
+                                        ifelse(abs(z_stat) >= 2, "**", 
+                                               ifelse(abs(z_stat) >= 1.96, "*", "ns"))))
 
-# png("plot6.png", width = 800, height = 500) #create a plot to visually inspect stationarity
-# tsdiag(model,gof.lag=2) #reassuringly residuals seem to be uncorrelated
-dev.off()
 
-#============================== Forecasting ==================================#
-# in sample and out of sample forecasts for both ts
+# Calculate R-squared and RMSE
+residuals <- residuals(arma20)
+r_squared <- 1 - sum(residuals^2) / sum((dln_ipi_ts - mean(dln_ipi_ts))^2)
+rmse <- sqrt(mean(residuals^2))
 
-### M1
+arma20_tidy <- rbind(arma20_tidy, data.frame(term = "R-squared", estimate = r_squared, std.error = NA, z_stat = NA, Significance = NA))
+arma20_tidy <- rbind(arma20_tidy, data.frame(term = "RMSE", estimate = rmse, std.error = NA,  z_stat = NA, Significance = NA))
 
-# dynamic in-sample forecast: long period
-# Générer un dataframe avec les valeurs observées et fittées
+write.xlsx(arma20_tidy, "results/arma20_model_results.xlsx")
 
-serie <- window(dln_ippi_cvs_ts,start=c(2015,1))
-serie1 <- serie
-serie2 <- window(dln_ippi_cvs_ts,end=c(2019,1))
 
-dynamic_forecast <-forecast(object=serie1, model=ma4, h=88)
+## Testing the residuals ----
 
-df_fitted <- data.frame(
-  date = time(serie1),
-  value = as.numeric(serie1),
-  type = "Observé"
+## First, we check graphically the residuals
+theme_set(theme_bw())
+png("figures/residuals_diagnostics.png", width = 800, height = 500,bg = "white")
+par(bg = "white")
+checkresiduals(best_model) ## Residuals look non correlated and normal
+dev.off() 
+
+## Then, we test these assumptions formally
+
+## We perform a test of autocorrelation (Ljung-Box) then 2 tests of normality (Shapiro, Kolmogorov-Smirnov)
+ljung_box <- Box.test(best_model$residuals, lag = 40, type = "Ljung-Box")
+print(ljung_box) # p-value > 5%: fail to reject H0 (no autocorrelation)
+
+# Perform Shapiro-Wilk test for normality
+shapiro_res <- shapiro.test(best_model$residuals)
+print(shapiro_res) # Reject H0: residuals do not follow a normal distribution
+
+
+# Perform Kolmogorov-Smirnov test for normality
+ks_res <- ks.test(best_model$residuals, "pnorm", mean(best_model$residuals), sd(best_model$residuals))
+print(ks_res) # Same: do not reject H0 (not normal)
+
+diagnostic_tests <- data.frame(
+  Test = c("Ljung-Box Test", "Shapiro-Wilk Test", "Kolmogorov-Smirnov Test"),
+  H0 = c("No autocorrelation", "Normality", "No Normality"),
+  p_value = c(ljung_box$p.value, shapiro_res$p.value, ks_res$p.value),
+  Testing_H0 = c(ljung_box$p.value < 0.05, shapiro_res$p.value < 0.05, ks_res$p.value < 0.05)
 )
 
-df_fitted$fitted <- fitted(dynamic_forecast)  # Ajout des valeurs ajustées
+diagnostic_tests <- diagnostic_tests %>%
+  mutate(
+    p_value = round(p_value, 2),
+    Testing_H0 = ifelse(Testing_H0, "TRUE", "FALSE")  # Traduire les booléens en français
+    )
 
-# Ajouter les prévisions sur 3 périodes avec l'intervalle de confiance
-df_forecast <- plot_forecast(serie = serie1,forecast_model = dynamic_forecast,periods = 3)
+write.xlsx(diagnostic_tests, "results/diagnostic_tests.xlsx")
 
-df_forecast
+
+## 3. Forecasting ----
+
+## We run two forecasts : one "in-sample" forecast using the fitted value, and one "out-of-sample"
+## using the observed values and assuming the innovation null on the forecast period
+
+serie <- window(dln_ipi_ts,start=c(2023,1))
+horizon <- 2 ## Horizon of the forecast
+dynamic_forecast <- forecast(object = serie, model = best_model, h = horizon)
+
+# Observed values
+df_observed <- data.frame(
+  date = as.numeric(time(serie)),
+  value = as.numeric(serie),
+  type = "IPI"
+)
+
+# Fitted values
+df_fitted <- data.frame(
+  date = as.numeric(time(serie)),
+  value = as.numeric(fitted(dynamic_forecast)),
+  type = "In-sample forecast"
+)
+
+## last Observation
+
+last_obs <- df_observed[nrow(df_observed), ] %>%
+  mutate(
+    lower_80 = value, upper_80 = value,
+    lower_95 = value, upper_95 = value,
+    type = "Forecast"
+  )
+
+# Forecasted values and confidence intervals
+df_forecast <- data.frame(
+  date = as.numeric(time(dynamic_forecast$mean)),
+  value = as.numeric(dynamic_forecast$mean),
+  lower_80 = as.numeric(dynamic_forecast$lower[,1]),
+  upper_80 = as.numeric(dynamic_forecast$upper[,1]),
+  lower_95 = as.numeric(dynamic_forecast$lower[,2]),
+  upper_95 = as.numeric(dynamic_forecast$upper[,2]),
+  type = "Forecast"
+)
+
+df_forecast1 <- bind_rows(last_obs, df_forecast)
+df_forecast2 <- df_forecast %>% select(date,value) %>% mutate(type="IPI")
+df_forecast3 <- rbind(df_observed[nrow(df_observed),],df_forecast2) %>% mutate(type="Forecaste")
+
+# Plot of the forecast
+gg_forecast <- ggplot(df_observed, aes(x = date, y = value, color = type)) +
+  geom_line(size=1) +
+  geom_line(data=df_fitted,aes(x=date,y=value)) +
+  geom_line(data=df_forecast1,aes(x=date,y=value), color="red",linetype="dashed") +
+  geom_point(data=df_forecast, aes(x=date, y=value), color="red", size=1) +
+  geom_label_repel(data=df_forecast, aes(x = date, y = value, label = paste0(round(100*value, 1),"%" )),
+             fill = "white", color = "red", size = 3) +
+  geom_ribbon(data = df_forecast1, aes(ymin = lower_80, ymax = upper_80,fill = "80% Confidence Interval"), alpha = 0.2) +
+  geom_ribbon(data = df_forecast1, aes(ymin = lower_95, ymax = upper_95,fill = "95% Confidence Interval"), alpha = 0.1) +
+  labs(
+       y = expression(Delta * " log(IPI)")) +
+  theme_minimal() +
+  theme(axis.title=element_text(size=13),
+        axis.title.x=element_blank(),
+        axis.text=element_text(size=12),
+        plot.title = element_text(hjust=0.5,size=14),
+        legend.title = element_blank(),
+        legend.text = element_text(size=12)) +
+  scale_x_continuous(breaks = seq(min(df_observed$date), max(df_observed$date), by = 1))  +
+scale_y_continuous(label=scales::percent,breaks = seq(-0.6, 0.6, by = 0.1),limits = c(-0.6,0.6)) +
+  scale_fill_manual(values = c("80% Confidence Interval" = "blue", "95% Confidence Interval" = "lightblue"))
+
+gg_forecast
+
+ggsave("figures/forecast.png",gg_forecast,height=5,width=10)
