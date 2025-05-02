@@ -177,7 +177,6 @@ ipi_ts <- window(df_to_ts(ipi), start=c(2017,1))
 
 ln_ipi_ts = log(ipi_ts) ## Logarithmic transformation (stabilize variance and study log-growth)
 ln_ipi <- ts_to_df(ln_ipi_ts) ## Function to transform a time serie into a dataframe object
-ln_ipi$date <- as.Date(as.yearqtr(ln_ipi$date), format = "%YQ%q")
 
 ## First, we check that there is no seasonality by using a X13 Filter
 
@@ -229,8 +228,6 @@ gg_dln_ipi
 gr_ipi <- grid.arrange(gg_ipi,gg_dln_ipi,ncol=2)
 ggsave("figures/ipi.png",gr_ipi,width=15,height=5)
 
-dln_ipi$date <- as.Date(as.yearqtr(dln_ipi$date), format = "%YQ%q")
-
 ## Stationnarity tests ----
 
 ## We run 3 tests : ADF with trend on log(IPI), ADF with drift, ADF with drift on delta_log(IPI)
@@ -262,7 +259,7 @@ mean(dln_ipi_ts)
 
 # Perform a t-test for the mean (null hypothesis: mean = 0)
 t_test <- t.test(dln_ipi_ts, mu = 0)
-t_test$p.value # 0.8441784, cannot reject the null hypothesis
+t_test$p.value # 0.6313227, cannot reject the null hypothesis
 
 ## Technically, we could assume no drift, but we take this most general case anyway
 adf_test_diff <- ur.df(dln_ipi_ts, type = "drift", selectlags = "BIC")
@@ -475,6 +472,18 @@ last_obs <- df_observed[nrow(df_observed), ] %>%
     lower_95 = value, upper_95 = value,
     type = "Forecast"
   )
+
+# Confidence intervals
+residual_variance <- var(residuals(arma20))
+
+## Compute the forecast variance at T+1 and T+2
+beta1_hat <- as.numeric(arma20$coef[1])
+sigma_hat <- residual_variance
+forecast_variance_Tplus1 <- sigma_hat
+forecast_variance_Tplus2 <- (beta1_hat^2+1)*sigma_hat
+
+forecast_variance_Tplus1
+forecast_variance_Tplus2
 
 # Forecasted values and confidence intervals
 df_forecast <- data.frame(

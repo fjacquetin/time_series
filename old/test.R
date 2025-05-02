@@ -13,25 +13,32 @@ liste <- read.xlsx('data/series.xlsx',sheet="IPI-2021") %>%
 liste2 <- as.numeric(liste[[1]])
 # liste2 <- liste2[1]
 # Fonction pour tracer ACF et PACF
-plot_acf_pacf <- function(series, serie_name ,option=1){
+plot_acf_pacf <- function(series, dseries, serie_name ,option=1){
   # Extraire la série temporelle
   serie <- series %>% select(ipi)
   serie <- serie[,1]
-  
+  dserie <- dseries %>% select(ipi)
+  dserie <- dseries[,1]
   # ACF et PACF
-  acf_data <- acf(serie, plot = FALSE, lag.max = 40)
-  pacf_data <- pacf(serie, plot = FALSE, lag.max = 40)
+  acf_data <- acf(dserie, plot = FALSE, lag.max = 40)
+  pacf_data <- pacf(dserie, plot = FALSE, lag.max = 40)
   
   # Conversion en data.frame
   acf_df <- data.frame(Lag = acf_data$lag, ACF = acf_data$acf)
   pacf_df <- data.frame(Lag = pacf_data$lag, PACF = pacf_data$acf)
   serie_df <- data.frame(Date = time(serie), IPI = as.numeric(serie))
+  dserie_df <- data.frame(Date = time(dserie), IPI = as.numeric(serie))
   
   # Graphique de la série temporelle
   p0 <- ggplot(serie_df, aes(x = Date, y = IPI)) +
     geom_line(color = "black") +
     theme_minimal() +
-    labs(title = paste("Série temporelle -", serie_name), x = "Date", y = "IPI")
+    labs(title = paste("Série temporelle -", serie_name), x = "Date", y = "logIPI")
+  
+  p00 <- ggplot(dserie_df, aes(x = Date, y = IPI)) +
+    geom_line(color = "black") +
+    theme_minimal() +
+    labs(title = paste("Série temporelle -", serie_name), x = "Date", y = "dlogIPI")
   
   # Graphique ACF
   p1 <- ggplot(acf_df, aes(x = Lag, y = ACF)) +
@@ -50,7 +57,7 @@ plot_acf_pacf <- function(series, serie_name ,option=1){
     labs(title = paste("Partial Autocorrelation Function (PACF) -", serie_name), x = "Lag", y = "PACF")
   
   # Affichage des trois graphiques
-  grid_plot <- grid.arrange(p0, p1, p2, ncol=2, nrow=2)
+  grid_plot <- grid.arrange(p0, p00, p1, p2, ncol=2, nrow=2)
   
   # Enregistrer les graphiques dans des fichiers
   if(option == 1) {
@@ -85,10 +92,13 @@ for(i in 1:length(liste2)) {
   ln_ipi_ts2 = log(serie3)
 
   # Différencier la série
+  serie <- ts_to_df(ln_ipi_ts)
+  serie2 <- ts_to_df(ln_ipi_ts2)
+  
   dserie <- ts_to_df(diff(ln_ipi_ts))
   dserie2 <- ts_to_df(diff(ln_ipi_ts2))
   
   # Tracer et enregistrer ACF/PACF pour la série différenciée
-  plot_acf_pacf(dserie, liste2[i],option=1)
-  plot_acf_pacf(dserie2, liste2[i],option=2)
+  plot_acf_pacf(serie, dserie, liste2[i],option=1)
+  plot_acf_pacf(serie2, dserie2, liste2[i],option=2)
 }
