@@ -3,7 +3,7 @@
 rm(list=ls())
 
 # List of required packages
-packages <- c("tidyverse", "insee", "openxlsx", "lubridate", "urca", "zoo", 
+packages <- c("tidyverse", "openxlsx", "lubridate", "urca", "zoo", 
               "ggpubr", "forecast", "fUnitRoots", "gridExtra", "ggrepel", 
               "seasonal", "broom")
 
@@ -14,7 +14,6 @@ if (length(packages_to_install) > 0) {
 }
 
 library(tidyverse) # dplyr, magrittr
-library(insee) # API Insee
 library(openxlsx) # saveworkbook
 library(lubridate) # as.Date
 library(urca) # ur.df
@@ -94,59 +93,9 @@ compare_arma_models <- function(series, p_max, q_max, file_name = "results/BIC_M
 
   }
 
-## Start : How does work Insee's API
-?get_dataset_list # No argument, just imports all existing series
-?get_idbank_list # Imports all series names from a key list
-?get_insee_dataset # Imports all (raw) series selected from a key list
-
-
 ## 1. Dataset ----
 
-## First, list all datasets from Insee
-
-all_datasets <- get_dataset_list()
-
-keys_list = c(
-  'IPI-2021' # IPI
-)
-
-df_idbank_list_selected =
-  get_idbank_list(keys_list)
-
-wb <- createWorkbook()
-addWorksheet(wb=wb,sheetName = "All Datasets")
-writeData(wb=wb,sheet="All Datasets",x=all_datasets)
-if (!file.exists('data/All_Datasets.xlsx')) {
-  saveWorkbook(wb=wb,file="data/All_Datasets.xlsx",overwrite=TRUE)
-}
-
-## We list all the different IPI in the file "data/series.xlsx"
-
-indicators <- all_datasets %>%
-  filter(id %in% keys_list)
-
-wb <- createWorkbook()
-addWorksheet(wb, sheetName = "Main indicators")
-addWorksheet(wb, sheetName = keys_list)
-writeData(wb, sheet = "Main indicators", x = indicators)
-writeData(wb, sheet = keys_list, x = df_idbank_list_selected)
-saveWorkbook(wb, file = "data/series.xlsx", overwrite = TRUE)
-
-## We chose the index "Manufacture of computers and peripheral equipment"
-
-serie <- c(
-  '010768019' # 26.20 - Manufacture of computers
- ) 
-
-ipi <- get_insee_idbank(serie) %>%
-  filter(FREQ == "M") %>%
-  select(date = DATE, values = OBS_VALUE, id_bank = IDBANK) %>%
-  mutate(date = as.Date(date, format = "%d/%m/%Y")) %>%
-  arrange(date) %>%
-  select(-id_bank) %>%
-  rename(ipi=values)
-
-write.csv2(x = ipi,file="data/ipi.csv", row.names = FALSE)
+ipi <- read.csv2("data/ipi.csv")
 
 ### IPI Vizualisation ----
 
@@ -230,18 +179,8 @@ ggsave("figures/ipi.png",gr_ipi,width=15,height=5)
 
 ## Stationnarity tests ----
 
-## We run 3 tests : ADF with trend on log(IPI), ADF with drift, ADF with drift on delta_log(IPI)
+## We run 2 tests : ADF with drift on log(IPI), ADF with drift on delta_log(IPI)
 ## the lags are automatically selected using a BIC criterion
-
-# Augmented Dickey-Fuller (ADF) Test with trend
-adf_test_trend <- ur.df(ln_ipi_ts, type = "trend", selectlags = "BIC")
-summary(adf_test_trend)
-
-phi3_hat <- adf_test_trend@teststat[2]  # Test statistic for trend
-phi3 <- adf_test_trend@cval[2, 3]       # Critical value for trend
-# Check if the null hypothesis (H0) can be rejected
-H0_TEST_TREND <- phi3_hat < phi3
-H0_TEST_TREND # Can't reject H0, so the trend coefficient is assumed to be null
 
 # Augmented Dickey-Fuller (ADF) Test with drift
 adf_test_drift <- ur.df(ln_ipi_ts, type = "drift", selectlags = "BIC")
@@ -315,19 +254,19 @@ H0_KPSS_MU  # TRUE → Do not reject H0, the series is stationary
 
 
 test_results <- data.frame(
-  Test = c("ADF Test (Trend)", "ADF Test (Drift)", "ADF Test (Differenced)",
+  Test = c("ADF Test (Drift)", "ADF Test (Differenced)",
            "Phillips-Perron Test", "ERS Test (DF-GLS)", "ERS Test (P-test)",
            "KPSS Test (Tau)", "KPSS Test (Mu)"),
-  Coefficient_Tested = c("Linear Trend", "Unit Root", "Unit Root", "Unit Root", "Unit Root", "Unit Root", "Unit Root", "Unit Root"),
-  Test_Statistic = c(phi3_hat, tau2_hat, tau2_hat2, pp_stat, ers_dfgls_stat, ers_p_stat, kpss_tau_stat, kpss_mu_stat),
-  Critical_Value = c(phi3, tau2, tau22, pp_crit, ers_dfgls_crit, ers_p_crit, kpss_tau_crit, kpss_mu_crit),
-  H0 = c("Trend Coefficient = 0", "Not Stationary", "Not stationary", "Not Stationary", "Not stationary", "Not Stationary", "Stationary", "Stationary"),
-  Testing_H0 = c(H0_TEST_TREND, H0_TEST_DRIFT, H0_TEST_DIFF, H0_PP, H0_ERS_DFGLS, H0_ERS_P, H0_KPSS_TAU, H0_KPSS_MU)
+  Coefficient_Tested = c("Unit Root", "Unit Root", "Unit Root", "Unit Root", "Unit Root", "Unit Root", "Unit Root"),
+  Test_Statistic = c(tau2_hat, tau2_hat2, pp_stat, ers_dfgls_stat, ers_p_stat, kpss_tau_stat, kpss_mu_stat),
+  Critical_Value = c(tau2, tau22, pp_crit, ers_dfgls_crit, ers_p_crit, kpss_tau_crit, kpss_mu_crit),
+  H0 = c("Not Stationary", "Not stationary", "Not Stationary", "Not stationary", "Not Stationary", "Stationary", "Stationary"),
+  Testing_H0 = c(H0_TEST_DRIFT, H0_TEST_DIFF, H0_PP, H0_ERS_DFGLS, H0_ERS_P, H0_KPSS_TAU, H0_KPSS_MU)
   
 )
 
 test_results$Test_Statistic <- round(test_results$Test_Statistic,2)
-test_results$Test_Statistic <- round(test_results$Critical_Value,2)
+test_results$Critical_Value <- round(test_results$Critical_Value,2)
 test_results$Testing_H0 <- as.logical(test_results$Testing_H0)
 
 write.xlsx(test_results, "results/adf_test_results.xlsx")
@@ -373,6 +312,8 @@ ggsave("figures/acf.png",acf,width=8,height=5)
 ## Application to our serie with pmax=2, qmax=1
 bic_results <- compare_arma_models(dln_ipi_ts, p_max = 2, q_max = 1)
 bic_results[1,]
+
+write.xlsx(file="results/BIC_models.xlsx",x=bic_results)
 
 ## Comparison with the (dirty) automatic method
 auto.arima(dln_ipi_ts) # The dirty way concludes to the same model
